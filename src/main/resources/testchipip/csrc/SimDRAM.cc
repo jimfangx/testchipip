@@ -2,16 +2,27 @@
 #include <svdpi.h>
 #include <stdint.h>
 #include <cassert>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
 #include <sys/mman.h>
 #include <fesvr/memif.h>
 #include <fesvr/elfloader.h>
 
 #include "mm_dramsim2.h"
+#include "mm_dramsim3.h"
 
-bool use_dramsim = false;
-std::string ini_dir = "dramsim2_ini";
+// Set this to true for non-sim-flow consumers that need to force DRAMSim2.
+bool force_use_dramsim2 = false;
+std::string dramsim2_ini_dir = "dramsim2_ini";
+std::string dramsim2_memory_ini = "DDR3_micron_64M_8B_x4_sg15.ini";
+std::string dramsim2_system_ini = "system.ini";
+std::string dramsim3_ini = "DRAMSim3.ini";
+std::string dramsim3_out = "dramsim-results";
 std::string loadmem_file = "";
 std::vector<std::map<long long int, backing_data_t>> backing_mem_data = {};
+std::map<int, int> chip_id_to_channel_count = {};
 
 // TODO FIX: This doesn't properly handle striped memory across multiple channels
 // The full memory range is duplicated across each channel
@@ -33,10 +44,7 @@ extern "C" void *memory_init(
 
     mm_t *mm;
     s_vpi_vlog_info info;
-
-    std::string memory_ini = "DDR3_micron_64M_8B_x4_sg15.ini";
-    std::string system_ini = "system.ini";
-    std::string ini_dir = "dramsim2_ini";
+    bool use_dramsim2 = force_use_dramsim2;
 
     if (!vpi_get_vlog_info(&info))
       abort();
@@ -44,10 +52,16 @@ extern "C" void *memory_init(
     for (int i = 1; i < info.argc; i++) {
       std::string arg(info.argv[i]);
 
-      if (arg == "+dramsim")
-        use_dramsim = true;
+      if (arg == "+dramsim2" || arg == "+use_dramsim2")
+        use_dramsim2 = true;
+      if (arg == "+dramsim3" || arg == "+dramsim")
+        use_dramsim2 = false;
       if (arg.find("+dramsim_ini_dir=") == 0)
-        ini_dir = arg.substr(strlen("+dramsim_ini_dir="));
+        dramsim2_ini_dir = arg.substr(strlen("+dramsim_ini_dir="));
+      if (arg.find("+dramsim_ini=") == 0)
+        dramsim3_ini = arg.substr(strlen("+dramsim_ini="));
+      if (arg.find("+dramsim_out=") == 0)
+        dramsim3_out = arg.substr(strlen("+dramsim_out="));
       if (arg.find("+loadmem=") == 0)
         loadmem_file = arg.substr(strlen("+loadmem="));
     }
@@ -84,17 +98,21 @@ extern "C" void *memory_init(
         load_elf(loadmem_file.c_str(), &loadmem_memif, &entry, 0);
       }
 
-      backing_mem_data[chip_id][mem_base] = {data, mem_size};
+      backing_mem_data[chip_id][mem_base] = {data, (size_t)mem_size};
     }
 
-    if (use_dramsim)
+    int channel_id = chip_id_to_channel_count[chip_id]++;
+
+    if (use_dramsim2)
       mm = (mm_t *) (new mm_dramsim2_t(mem_base, mem_size, word_size, line_size,
                                        backing_mem_data[chip_id][mem_base],
-                                       memory_ini, system_ini, ini_dir,
+                                       dramsim2_memory_ini, dramsim2_system_ini, dramsim2_ini_dir,
                                        1 << id_bits, clock_hz));
     else
-      mm = (mm_t *) (new mm_magic_t(mem_base, mem_size, word_size, line_size,
-                                    backing_mem_data[chip_id][mem_base]));
+      mm = (mm_t *) (new mm_dramsim3_t(mem_base, mem_size, word_size, line_size,
+                                       backing_mem_data[chip_id][mem_base],
+                                       dramsim3_ini, dramsim3_out,
+                                       1 << id_bits, clock_hz, channel_id));
 
 
     return mm;
